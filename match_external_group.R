@@ -114,27 +114,16 @@ raincloud(
 )
 
 
+# Run the vecmatch package
 reference <- "simulated"
-
-formula = category ~ age * sex
+formula = category ~ age * sex # This has to be defined outside the function (defining it inside actually creates some issues)
 results <- run_vecmatch(combined =  merged_data)
 matched_data <- results[[1]]
 csr_matrix <- results[[2]]
 gps_matrix <- results[[3]]
-matched_data
 
 
-print(reference)
-# 1. Calculate the Generalized propensity scores
-gps_matrix <- estimate_gps(formula,
-                           data = merged_data,
-                           method = "vglm",
-                           reference = reference
-)
-csr_matrix <- csregion(gps_matrix)
-
-
-# Check distributions
+# Check distributions of matched dataset
 raincloud(
   data = matched_data,
   y = age,
