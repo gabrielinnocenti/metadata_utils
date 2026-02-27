@@ -1,0 +1,174 @@
+---
+title: "matching_external_cohort"
+author: "Gabriel Innocenti"
+date: "2026-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(vecmatch)
+library(dplyr)
+
+reference <- "simulated"
+formula <- category ~ age * sex
+```
+
+## Define functions
+
+```{r}
+# Create database
+generate_db <- function(metadata,
+                 group_var = NULL, 
+                 project_var = NULL, 
+                 sex_var = NULL, 
+                 age_interval = NULL) {
+  
+  # Remove NAs in sex and age
+  metadata_vecmatch <- metadata %>%
+    filter(!is.na(sex), !is.na(age))
+
+  # Conditional filters
+  if (!is.null(group_var)) {
+    metadata_vecmatch <- metadata_vecmatch %>%
+      filter(group_var == group_test)
+  }
+
+  if (!is.null(sex_var)) {
+    metadata_vecmatch <- metadata_vecmatch %>%
+      filter(sex_var == sex_var)
+  }
+  
+  if (!is.null(project_var)) {
+    metadata_vecmatch <- metadata_vecmatch %>%
+      filter(project_var == project)
+  }
+  
+  if (!is.null(age_interval) && length(age_interval) == 2) {
+    metadata_vecmatch <- metadata_vecmatch %>%
+      filter(age >= age_interval[1], age <= age_interval[2])
+  }
+  # Add the batch column (category)
+  metadata_vecmatch["category"] <- "db"
+  metadata_vecmatch <- metadata_vecmatch[c("sample_name","group_test", "sex", "age", "origin", "category")]
+  return(metadata_vecmatch)
+}
+
+
+# Wrapper for running vecmatch using the metadata_db and giving the table with the expected distribution
+run_vecmatch <- function(combined,
+                         significance_raincloud = "t_test",
+                         formula = NULL, # formula object
+                         caliper = 1
+) {
+  formula = category ~ age * sex ### This should be possible to modify
+  
+  # 1. Calculate the Generalized propensity scores
+  gps_matrix <- estimate_gps(formula,
+                             data = combined,
+                             method = "vglm",
+                             reference = reference
+  )
+  
+  # 2. Define the Common Support Region (CSR)
+  csr_matrix <- csregion(gps_matrix)
+  print(colnames(gps_matrix))
+  str(gps_matrix)
+  # 3. Matching on the generalized propensity scores
+  matched_data <- match_gps(
+    csmatrix = csr_matrix,
+    reference = reference,
+    caliper = caliper
+  )
+  return(list(matched_data, 
+              csr_matrix, 
+              gps_matrix))
+}
+```
+
+## Load metadata slim and generate simulated data
+```{r, echo=FALSE}
+# Load metadata slim table
+metadata <- read.table("metadata_slim.csv", sep=";", header=TRUE)
+# Generate reference metadata table to be compared to a group defined by user
+# In this case we want to select Controls from any project
+# But we could select any disease present in the database, any specific project,
+# specific age intervals and also specific project
+metadata_db <- generate_db(metadata, 
+                           group_var = "Controls") # Select based on disease group
+summary(metadata_db)
+
+```
+
+## Simulate external data
+Test first against simulated data on patients.
+Here we define a population of 120 controls, age normally distributed with mean=60 and std=15, random sex sampling.
+
+```{r}
+set.seed(123)  # for reproducibility
+
+# Parameters
+n_samples <- 130           # total number of samples
+age_mean <- 50             # average age
+age_sd <- 15               # standard deviation for age
+
+# Create simulated_data
+simulated_data <- data.frame(
+  sample_name = 1:n_samples,
+  group_test = "Controls",
+  sex = sample(c("F", "M"), n_samples, replace = TRUE),  # random F/M
+  age = round(rnorm(n_samples, mean = age_mean, sd = age_sd)),  # normally distributed
+  # age = round(runif(n_samples, min = 25, max = 90)), # randomly distributed in a given interval
+  origin = "Austria",
+  category = "simulated"
+)
+
+summary(simulated_data)
+```
+## Merge with the reference database (metadata_slim selected)
+We merge the 2 groups and use vecmatch raincloud visualization to assess the sex-age distribution.
+```{r}
+# Concatenate the 2 tables
+merged_data <- rbind(metadata_db, simulated_data)
+
+# Use vecmatch visualization function to show the distribution of the 2 groups
+raincloud(
+  data = merged_data,
+  y = age,
+  group = category,
+  facet=sex,
+  significance = "t_test",
+  sig_label_color = TRUE
+)
+```
+Groups are heavily unmatched (sex,age). Standardized mean deviation is used as a metric to assess the difference between the 2 distribution and t-test for assessing the difference significance
+
+## Use Vecmatch propensity score matching algoritm, using common support region calculation
+
+```{r}
+results <- run_vecmatch(combined =  merged_data)
+matched_data <- results[[1]]
+csr_matrix <- results[[2]]
+gps_matrix <- results[[3]]
+
+# Check distributions
+raincloud(
+  data = matched_data,
+  y = age,
+  group = category,
+  facet=sex,
+  significance = "t_test",
+  sig_label_color = TRUE
+)
+```
+Groups are now sex-age matched (non-significant difference).
+
+## Remaining Issues
+
+1. **External group cannot be treated as a fixed reference**
+
+   In the current implementation, I could not identify a straightforward way to treat the external group (`simulated_data`) as a fixed reference group. The matching algorithm applies trimming to both groups: not only to the target samples (which may be out-of-distribution), but also to the reference group. This is problematic because the external samples are intended to preserve a distribution representative of the database and ideally should remain unaffected by trimming.
+
+2. **Desirable two-step matching strategy**
+
+   Ideally, I would implement a simplified two-step procedure. First, perform exact 1-to-1 matching within the database (i.e., for each external sample, identify an exact age–sex match in the internal database), thereby avoiding a full `vecmatch` run. Only if at least one exact match cannot be found should the algorithm fall back to generalized propensity score matching using `vecmatch`.
