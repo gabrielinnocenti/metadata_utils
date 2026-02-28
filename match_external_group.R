@@ -1,5 +1,6 @@
 library("dplyr")
 library(vecmatch)
+library("MatchIt")
 
 # Create database
 generate_db <- function(metadata,
@@ -84,9 +85,9 @@ metadata_db <- generate_db(metadata,
 set.seed(123)  # for reproducibility
 
 # Parameters
-n_samples <- 130           # total number of samples
-age_mean <- 50             # average age
-age_sd <- 15               # standard deviation for age
+n_samples <- 60          # total number of samples
+age_mean <- 65             # average age
+age_sd <- 10               # standard deviation for age
 
 # Create simulated_data
 simulated_data <- data.frame(
@@ -114,6 +115,22 @@ raincloud(
 )
 
 
+# Check if it is possible to perform 1-to-1 Sex-Age matching. Compare number of samples matched to total number of samples
+m.out <- matchit(as.factor(category) ~ sex, data = merged_data,exact = ~sex+age) # we set we wanna keep the exact 1-to-1 sex and age
+matched_exact_data <- match.data(m.out)
+delta <- sum(merged_data$category == "simulated") - sum(matched_exact_data$category == "simulated")
+# Use raincloud visualization raincloud function
+raincloud(
+  data = as.data.frame(matched_exact_data),
+  y = age,
+  group = category,
+  significance = "t_test",
+  sig_label_color = TRUE
+)
+print(delta)
+
+# If delta is > 0, then result is suboptimal cause we wanna keep 100% of the samples in the dataset
+# then we ignore this result and use vecmatch.
 # Run the vecmatch package
 reference <- "simulated"
 formula = category ~ age * sex # This has to be defined outside the function (defining it inside actually creates some issues)
@@ -139,4 +156,7 @@ balqual(matched_data,
         formula,
         statistic = "max"
 )
+
+# Check distributions of matched dataset
+
 
